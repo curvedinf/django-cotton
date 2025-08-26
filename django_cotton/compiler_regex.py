@@ -64,7 +64,8 @@ class Tag:
                 else:
                     processed_attrs.append(f'{key}="{actual_value}"')
 
-        return " " + " ".join(processed_attrs), "".join(extracted_attrs)
+        attrs_string = " " + " ".join(processed_attrs) if processed_attrs else ""
+        return attrs_string, "".join(extracted_attrs)
 
 
 class CottonCompiler:
