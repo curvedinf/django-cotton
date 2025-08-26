@@ -24,3 +24,6 @@ profile = "black"
 python = ">=3.8,<4"
 django = ">=4.2,<5.3"
 wove = ">=0.3.0,<0.4.0"
+
+[tool.poetry.extras]
+test = ["Django"]

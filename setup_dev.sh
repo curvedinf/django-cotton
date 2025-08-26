@@ -13,7 +13,7 @@ source venv/bin/activate
 
 # 3. Install django-cotton in editable mode and other dependencies
 echo "Installing dependencies..."
-pip install -e .
+pip install -e '.[test]'
 
 # 4. Install wove
 echo "Installing wove..."
