@@ -83,3 +83,50 @@ class MiscComponentTests(CottonTestCase):
         rendered = get_rendered(html)
 
         self.assertTrue("I'm an index file!" in rendered)
+
+    def test_cotton_preload(self):
+        self.create_template(
+            "cotton/my_component.html",
+            "<div>My Component</div>",
+        )
+        self.create_template(
+            "preload_view.html",
+            """
+            {% load cotton %}
+            {% cotton_preload %}
+                <c-my_component />
+            {% end_cotton_preload %}
+            <div>DEBUG: {{ cotton.preloaded_templates }}</div>
+            """,
+            "view/",
+        )
+
+        with self.settings(ROOT_URLCONF=self.url_conf()):
+            response = self.client.get("/view/")
+            self.assertContains(response, "DEBUG: ")
+            self.assertContains(response, "cotton/my_component.html")
+
+    def test_get_item_filter(self):
+        rendered = get_rendered(
+            "{{ my_dict|get_item:'my_key' }}",
+            {"my_dict": {"my_key": "my_value"}},
+        )
+        self.assertEqual(rendered, "my_value")
+
+    def test_merge_filter(self):
+        # Test merging with an existing key
+        rendered = get_rendered(
+            '{{ attrs|merge:"class:extra-class" }}',
+            {"attrs": {"class": "initial-class"}},
+        )
+        self.assertIn('class="extra-class initial-class"', rendered)
+
+    def test_eval_string_invalid_string(self):
+        from django_cotton.utils import eval_string
+
+        self.assertEqual(eval_string("not a literal"), "not a literal")
+
+    def test_ensure_quoted_already_quoted(self):
+        from django_cotton.utils import ensure_quoted
+
+        self.assertEqual(ensure_quoted('"already quoted"'), '"already quoted"')
