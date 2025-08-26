@@ -1,6 +1,11 @@
 import unittest
 
 import django
+from unittest.mock import patch
+from django.conf import settings
+from django.core.cache import cache
+
+from django_cotton.compiler_regex import CottonCompiler
 from django_cotton.tests.utils import CottonTestCase
 from django_cotton.tests.utils import get_compiled
 
@@ -374,3 +379,53 @@ class TemplateRenderingTests(CottonTestCase):
                 f"""attrs: 'attr="blue"'""" in content,
                 f"Attrs were not proxied to the target: {content}",
             )
+
+    def test_caching_works(self):
+        self.create_template(
+            "cotton/cached_component.html",
+            """I am a cached component.""",
+        )
+        self.create_template(
+            "cached_view.html",
+            """<c-cached-component />""",
+            "view/",
+        )
+
+        templates_setting = settings.TEMPLATES.copy()
+        templates_setting[0]["OPTIONS"]["loaders"] = [
+            "django_cotton.cotton_loader.Loader",
+            "django.template.loaders.filesystem.Loader",
+            "django.template.loaders.app_directories.Loader",
+        ]
+
+        with self.settings(
+            TEMPLATES=templates_setting,
+            CACHES={
+                "default": {
+                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                    "LOCATION": "unique-snowflake",
+                }
+            },
+            ROOT_URLCONF=self.url_conf(),
+        ):
+            with patch.object(
+                CottonCompiler, "process", wraps=CottonCompiler().process
+            ) as mock_process:
+                # Clear cache before first request
+                cache.clear()
+
+                # First request should trigger compilation
+                response = self.client.get("/view/")
+                self.assertContains(response, "I am a cached component.")
+                self.assertEqual(mock_process.call_count, 1)
+
+                # Second request should use cache
+                response = self.client.get("/view/")
+                self.assertContains(response, "I am a cached component.")
+                self.assertEqual(mock_process.call_count, 1)
+
+                # Clear cache and request again, should trigger compilation
+                cache.clear()
+                response = self.client.get("/view/")
+                self.assertContains(response, "I am a cached component.")
+                self.assertEqual(mock_process.call_count, 2)

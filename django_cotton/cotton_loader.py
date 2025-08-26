@@ -9,6 +9,7 @@ from django.template import TemplateDoesNotExist, Origin
 from django.utils._os import safe_join
 from django.template import Template
 from django.apps import apps
+from django.core.cache import cache
 
 from django_cotton.compiler_regex import CottonCompiler
 
@@ -47,7 +48,7 @@ class Loader(BaseLoader):
             with open(template_name, "r", encoding=self.engine.file_charset) as f:
                 return f.read()
         except FileNotFoundError:
-            raise TemplateDoesNotExist(template_name)
+            raise TemplateDoesNotExist(template_name) from e
 
     @lru_cache(maxsize=None)
     def get_dirs(self):
@@ -96,31 +97,29 @@ class Loader(BaseLoader):
 
 
 class CottonTemplateCacheHandler:
-    """This mimics the simple template caching mechanism in Django's cached.Loader which acts a decent fallback when
-    the user has not configured the cache loader manually.
-
-    TODO: implement cache warming functionality e.g. to be used at deployment
+    """
+    Handles caching of compiled cotton templates using Django's cache framework.
     """
 
-    def __init__(self):
-        self.template_cache = {}
-
     def get_cached_template(self, cache_key):
-        return self.template_cache.get(cache_key)
+        return cache.get(cache_key)
 
     def cache_template(self, cache_key, compiled_template):
-        self.template_cache[cache_key] = compiled_template
+        cache.set(cache_key, compiled_template, timeout=None)
 
     def get_cache_key(self, origin):
         try:
-            cache_key = self.generate_hash([origin.name, str(os.path.getmtime(origin.name))])
+            source_hash = self.generate_hash([origin.name, str(os.path.getmtime(origin.name))])
         except FileNotFoundError:
-            raise TemplateDoesNotExist(origin)
+            raise TemplateDoesNotExist(origin.name)
 
-        return cache_key
+        return f"django_cotton:template:{source_hash}"
 
     def generate_hash(self, values):
         return hashlib.sha1("|".join(values).encode()).hexdigest()
 
     def reset(self):
-        self.template_cache.clear()
+        # When using a shared cache, it's safer to not clear the entire cache.
+        # The caching strategy is based on file modification time, so changes
+        # to templates will naturally invalidate the cache.
+        pass

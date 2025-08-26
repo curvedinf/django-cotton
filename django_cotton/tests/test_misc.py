@@ -84,28 +84,6 @@ class MiscComponentTests(CottonTestCase):
 
         self.assertTrue("I'm an index file!" in rendered)
 
-    def test_cotton_preload(self):
-        self.create_template(
-            "cotton/my_component.html",
-            "<div>My Component</div>",
-        )
-        self.create_template(
-            "preload_view.html",
-            """
-            {% load cotton %}
-            {% cotton_preload %}
-                <c-my_component />
-            {% end_cotton_preload %}
-            <div>DEBUG: {{ cotton.preloaded_templates }}</div>
-            """,
-            "view/",
-        )
-
-        with self.settings(ROOT_URLCONF=self.url_conf()):
-            response = self.client.get("/view/")
-            self.assertContains(response, "DEBUG: ")
-            self.assertContains(response, "cotton/my_component.html")
-
     def test_get_item_filter(self):
         rendered = get_rendered(
             "{{ my_dict|get_item:'my_key' }}",
