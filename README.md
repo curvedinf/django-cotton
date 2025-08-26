@@ -565,6 +565,8 @@ Whether to search for component filenames in snake_case. If set to False, you ca
 
 Cotton is optimal when used with Django's cached.Loader. If you use <a href="https://django-cotton.com/docs/quickstart">automatic configuration</a> then the cached loader will be automatically applied.
 
+For production environments, it is highly recommended to configure a persistent cache backend (such as Redis or Memcached) for Django. `django-cotton` uses Django's cache to store compiled templates, and using a shared cache will provide a significant performance boost by preventing template recompilation on each request across multiple server processes.
+
 <hr>
 
 ## Tools
