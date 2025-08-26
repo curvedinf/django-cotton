@@ -99,6 +99,16 @@ class CottonComponentNode(Node):
         if template_path in cache:
             return cache[template_path]
 
+        # Check if the template was preloaded by a parent
+        cotton_data = get_cotton_data(context)
+        if "preloaded_templates" in cotton_data and template_path in cotton_data["preloaded_templates"]:
+            compiled_content = cotton_data["preloaded_templates"][template_path]
+            # We need to create a Template object from the compiled string
+            from django.template import Template
+            template = Template(compiled_content)
+            cache[template_path] = template
+            return template
+
         # Try to get the primary template
         try:
             template = get_template(template_path)
