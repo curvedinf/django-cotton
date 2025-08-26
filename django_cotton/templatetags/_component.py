@@ -1,6 +1,9 @@
 import functools
 from typing import Union
 
+from wove import weave
+from django_cotton.compiler_regex import CottonCompiler
+
 from django.conf import settings
 from django.template import Library, TemplateDoesNotExist
 from django.template.base import (
@@ -71,6 +74,26 @@ class CottonComponentNode(Node):
         }
 
         template = self._get_cached_template(context, component_data["attrs"])
+
+        if hasattr(template, 'origin') and template.origin and hasattr(template.origin, 'name') and template.origin.name:
+            try:
+                with open(template.origin.name, "r", encoding="utf-8") as f:
+                    source = f.read()
+
+                compiler = CottonCompiler()
+                dependencies = compiler.get_component_dependencies(source)
+
+                if dependencies:
+                    with weave() as w:
+                        @w.do(dependencies)
+                        def preload_task(dep_name):
+                            try:
+                                template_path = self._generate_component_template_path(dep_name, None)
+                                get_template(template_path)
+                            except (TemplateDoesNotExist, FileNotFoundError):
+                                pass
+            except (FileNotFoundError, TypeError):
+                pass
 
         if self.only:
             # Complete isolation

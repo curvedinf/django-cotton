@@ -1,8 +1,27 @@
 
+from django_cotton.compiler_regex import CottonCompiler
 from django_cotton.tests.utils import CottonTestCase, get_compiled
 
 
 class CompileTests(CottonTestCase):
+    def test_get_component_dependencies(self):
+        compiler = CottonCompiler()
+        html = """
+            <c-component is="static-component" />
+            <c-component is="{{ dynamic_component }}" />
+            <c-another-component />
+            <c-a.b.c />
+            <div>
+                <c-nested-component />
+            </div>
+            <c-self-closing />
+        """
+        dependencies = compiler.get_component_dependencies(html)
+        self.assertEqual(
+            sorted(dependencies),
+            sorted(['static-component', 'another-component', 'a.b.c', 'nested-component', 'self-closing'])
+        )
+
     def test_regex_compile(self):
         self.create_template(
             "cotton/new_compiler.html",

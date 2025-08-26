@@ -26,6 +26,10 @@ class MiscComponentTests(CottonTestCase):
 
     def test_loader_scans_all_app_directories(self):
         self.create_template(
+            "cotton/app_outside_of_dirs.html",
+            "My template path was not specified in settings!",
+        )
+        self.create_template(
             "app_outside_of_dirs_view.html", """<c-app-outside-of-dirs />""", "view/"
         )
 
@@ -56,6 +60,14 @@ class MiscComponentTests(CottonTestCase):
         self.create_template(
             "cotton/app_dir.html",
             "I'm from app templates!",
+        )
+        self.create_template(
+            "cotton/project_root.html",
+            "I'm from project root templates!",
+        )
+        self.create_template(
+            "cotton/app2/sub.html",
+            "i'm sub in project root",
         )
 
         html = """

@@ -429,3 +429,13 @@ class TemplateRenderingTests(CottonTestCase):
                 response = self.client.get("/view/")
                 self.assertContains(response, "I am a cached component.")
                 self.assertEqual(mock_process.call_count, 2)
+
+    def test_preloading_nested_components(self):
+        self.create_template("cotton/child.html", "Child")
+        self.create_template("cotton/parent.html", "Parent <c-child />")
+        self.create_template("cotton/grandparent.html", "Grandparent <c-parent />")
+        self.create_template("preloading_view.html", "<c-grandparent />", "view/")
+
+        with self.settings(ROOT_URLCONF=self.url_conf()):
+            response = self.client.get("/view/")
+            self.assertContains(response, "Grandparent Parent Child")

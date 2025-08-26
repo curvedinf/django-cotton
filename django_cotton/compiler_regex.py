@@ -144,6 +144,35 @@ class CottonCompiler:
 
         return "", html
 
+    def get_component_dependencies(self, html: str) -> List[str]:
+        dependencies = []
+        processed_html, _ = self.exclude_ignorables(html)
+        for match in Tag.tag_pattern.finditer(processed_html):
+            is_closing = bool(match.group(1))
+            if is_closing:
+                continue
+
+            component_name_part = match.group(2)
+            if component_name_part.startswith("__COTTON_IGNORE_"):
+                continue
+
+            tag_name = f"c-{component_name_part}"
+            attrs = match.group(3) or ""
+
+            if tag_name == "c-component":
+                # Dynamic component, look for 'is' attribute
+                is_match = re.search(r'is=(["\'])(.*?)\1', attrs)
+                if is_match:
+                    component_name = is_match.group(2)
+                    # We can only handle static component names here
+                    if not component_name.startswith("__COTTON_IGNORE_"):
+                        dependencies.append(component_name)
+            elif tag_name.startswith("c-") and tag_name not in ["c-vars", "c-slot"]:
+                component_name = tag_name[2:]
+                dependencies.append(component_name)
+
+        return list(set(dependencies))
+
     def process(self, html: str) -> str:
         """Putting it all together"""
         processed_html, ignorables = self.exclude_ignorables(html)
