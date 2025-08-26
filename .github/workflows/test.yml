@@ -34,7 +34,10 @@ jobs:
           docker compose -f dev/docker/docker-compose.yaml up -d
 
       - name: Run Tests
-        run: docker exec -t cotton-dev-app python manage.py test
+        run: docker exec -t cotton-dev-app coverage run manage.py test
+
+      - name: Coverage Report
+        run: docker exec -t cotton-dev-app coverage report
 
       - name: Stop and Remove Services
         run: docker compose -f dev/docker/docker-compose.yaml down
