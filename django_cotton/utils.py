@@ -21,6 +21,8 @@ def ensure_quoted(value):
 
 
 def get_cotton_data(context):
-    if "cotton_data" not in context:
-        context["cotton_data"] = {"stack": [], "vars": {}}
-    return context["cotton_data"]
+    data = context.setdefault("cotton_data", {"stack": [], "vars": {}, "preloaded_components": set()})
+    data.setdefault("preloaded_components", set())
+    data.setdefault("stack", [])
+    data.setdefault("vars", {})
+    return data

@@ -1,6 +1,9 @@
 import hashlib
 import os
+import threading
+from dataclasses import dataclass
 from functools import lru_cache
+from typing import Iterable, Tuple
 
 from django.conf import settings
 from django.template.loaders.base import Loader as BaseLoader
@@ -11,7 +14,9 @@ from django.template import Template
 from django.apps import apps
 from django.core.cache import cache
 
+from django_cotton import manifest
 from django_cotton.compiler_regex import CottonCompiler
+from django_cotton.dependency_registry import set_dependencies
 
 
 class Loader(BaseLoader):
@@ -23,19 +28,34 @@ class Loader(BaseLoader):
 
     def get_contents(self, origin):
         cache_key = self.cache_handler.get_cache_key(origin)
-        cached_content = self.cache_handler.get_cached_template(cache_key)
+        cached_payload = self.cache_handler.get_cached_template(cache_key)
 
-        if cached_content is not None:
-            return cached_content
+        if cached_payload is not None:
+            compiled, dependencies = cached_payload
+            set_dependencies(origin.name, dependencies)
+            return compiled
+
+        manifest_entry = manifest.get_precompiled(origin.name)
+        if manifest_entry is not None:
+            compiled = manifest_entry.compiled
+            dependencies = manifest_entry.dependencies
+            self.cache_handler.cache_template(cache_key, compiled, dependencies)
+            set_dependencies(origin.name, dependencies)
+            return compiled
 
         template_string = self._get_template_string(origin.name)
 
-        if "<c-" not in template_string and "{% cotton_verbatim" not in template_string:
-            compiled = template_string
-        else:
-            compiled = self.cotton_compiler.process(template_string)
+        needs_processing = "<c-" in template_string or "{% cotton_verbatim" in template_string
 
-        self.cache_handler.cache_template(cache_key, compiled)
+        if needs_processing:
+            dependencies = self.cotton_compiler.get_component_dependencies(template_string)
+            compiled = self.cotton_compiler.process(template_string)
+        else:
+            dependencies = []
+            compiled = template_string
+
+        self.cache_handler.cache_template(cache_key, compiled, dependencies)
+        set_dependencies(origin.name, dependencies)
 
         return compiled
 
@@ -47,8 +67,8 @@ class Loader(BaseLoader):
         try:
             with open(template_name, "r", encoding=self.engine.file_charset) as f:
                 return f.read()
-        except FileNotFoundError:
-            raise TemplateDoesNotExist(template_name) from e
+        except FileNotFoundError as exc:
+            raise TemplateDoesNotExist(template_name) from exc
 
     @lru_cache(maxsize=None)
     def get_dirs(self):
@@ -96,16 +116,50 @@ class Loader(BaseLoader):
             )
 
 
+@dataclass(frozen=True)
+class CachedTemplate:
+    compiled: str
+    dependencies: Tuple[str, ...]
+
+
 class CottonTemplateCacheHandler:
     """
-    Handles caching of compiled cotton templates using Django's cache framework.
+    Handles caching of compiled cotton templates. Defaults to an in-process cache but can optionally
+    delegate storage to Django's cache framework.
     """
 
-    def get_cached_template(self, cache_key):
-        return cache.get(cache_key)
+    def __init__(self):
+        strategy = getattr(settings, "COTTON_CACHE_STRATEGY", "local")
+        if strategy not in {"local", "django"}:
+            raise ValueError("COTTON_CACHE_STRATEGY must be 'local' or 'django'")
 
-    def cache_template(self, cache_key, compiled_template):
-        cache.set(cache_key, compiled_template, timeout=None)
+        self._use_django_cache = strategy == "django"
+        self._cache_timeout = getattr(settings, "COTTON_CACHE_TIMEOUT", None)
+        self._cache_prefix = getattr(settings, "COTTON_CACHE_PREFIX", "django_cotton:template:")
+        self._local_cache = {}
+        self._lock = threading.Lock()
+
+    def get_cached_template(self, cache_key):
+        if self._use_django_cache:
+            payload = cache.get(cache_key)
+            if payload is None:
+                return None
+            if isinstance(payload, CachedTemplate):
+                return payload
+            compiled, dependencies = payload
+            return CachedTemplate(compiled=compiled, dependencies=tuple(dependencies))
+
+        with self._lock:
+            return self._local_cache.get(cache_key)
+
+    def cache_template(self, cache_key, compiled_template, dependencies):
+        payload = CachedTemplate(compiled=compiled_template, dependencies=tuple(dependencies))
+
+        if self._use_django_cache:
+            cache.set(cache_key, payload, timeout=self._cache_timeout)
+        else:
+            with self._lock:
+                self._local_cache[cache_key] = payload
 
     def get_cache_key(self, origin):
         try:
@@ -113,13 +167,15 @@ class CottonTemplateCacheHandler:
         except FileNotFoundError:
             raise TemplateDoesNotExist(origin.name)
 
-        return f"django_cotton:template:{source_hash}"
+        return f"{self._cache_prefix}{source_hash}"
 
-    def generate_hash(self, values):
+    def generate_hash(self, values: Iterable[str]):
         return hashlib.sha1("|".join(values).encode()).hexdigest()
 
     def reset(self):
-        # When using a shared cache, it's safer to not clear the entire cache.
-        # The caching strategy is based on file modification time, so changes
-        # to templates will naturally invalidate the cache.
-        pass
+        if self._use_django_cache:
+            # We cannot safely flush a shared cache, rely on mtime-based invalidation.
+            return
+
+        with self._lock:
+            self._local_cache.clear()

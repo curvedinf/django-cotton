@@ -2,7 +2,6 @@ import functools
 from typing import Union
 
 from wove import weave
-from django_cotton.compiler_regex import CottonCompiler
 
 from django.conf import settings
 from django.template import Library, TemplateDoesNotExist
@@ -15,6 +14,7 @@ from django.template.loader import get_template
 from django_cotton.utils import get_cotton_data
 from django_cotton.exceptions import CottonIncompleteDynamicComponentError
 from django_cotton.templatetags import Attrs, DynamicAttr, UnprocessableDynamicAttr
+from django_cotton.dependency_registry import get_dependencies
 
 register = Library()
 
@@ -75,25 +75,8 @@ class CottonComponentNode(Node):
 
         template = self._get_cached_template(context, component_data["attrs"])
 
-        if hasattr(template, 'origin') and template.origin and hasattr(template.origin, 'name') and template.origin.name:
-            try:
-                with open(template.origin.name, "r", encoding="utf-8") as f:
-                    source = f.read()
-
-                compiler = CottonCompiler()
-                dependencies = compiler.get_component_dependencies(source)
-
-                if dependencies:
-                    with weave() as w:
-                        @w.do(dependencies)
-                        def preload_task(dep_name):
-                            try:
-                                template_path = self._generate_component_template_path(dep_name, None)
-                                get_template(template_path)
-                            except (TemplateDoesNotExist, FileNotFoundError):
-                                pass
-            except (FileNotFoundError, TypeError):
-                pass
+        cotton_data.setdefault("preloaded_components", set())
+        self._preload_dependencies(template, cotton_data)
 
         if self.only:
             # Complete isolation
@@ -196,6 +179,46 @@ class CottonComponentNode(Node):
         if type(value) is str and value.startswith('"') and value.endswith('"'):
             return value[1:-1]
         return value
+
+    def _preload_dependencies(self, template, cotton_data):
+        origin = getattr(template, "origin", None)
+        template_path = getattr(origin, "name", None)
+        if not template_path:
+            return
+
+        dependencies = get_dependencies(template_path)
+        if not dependencies:
+            return
+
+        preloaded = cotton_data.setdefault("preloaded_components", set())
+
+        to_preload = []
+        for dep in dependencies:
+            target = self._generate_component_template_path(dep, None)
+            if target not in preloaded:
+                preloaded.add(target)
+                to_preload.append(target)
+
+        if not to_preload:
+            return
+
+        preload_async = getattr(settings, "COTTON_ASYNC_PRELOAD", True)
+
+        def _load(path):
+            try:
+                get_template(path)
+            except TemplateDoesNotExist:
+                # Best effort preloading; ignore missing components.
+                pass
+
+        if preload_async:
+            with weave() as w:
+                @w.do(to_preload)
+                def preload_task(target):
+                    _load(target)
+        else:
+            for target in to_preload:
+                _load(target)
 
 
 def cotton_component(parser, token):

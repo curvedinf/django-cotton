@@ -565,9 +565,39 @@ Whether to search for component filenames in snake_case. If set to False, you ca
 
 ## Caching
 
-Cotton is optimal when used with Django's cached.Loader. If you use <a href="https://django-cotton.com/docs/quickstart">automatic configuration</a> then the cached loader will be automatically applied.
+Cotton still works seamlessly with Django's cached loader, but 2.1.3+blazed now keeps compiled templates in-process by default. This avoids the latency of making a round-trip to whatever cache backend your project uses. If you prefer the previous behaviour (to share the cache across multiple workers) you can opt back in:
 
-For production environments, it is highly recommended to configure a persistent cache backend (such as Redis or Memcached) for Django. `django-cotton` uses Django's cache to store compiled templates, and using a shared cache will provide a significant performance boost by preventing template recompilation on each request across multiple server processes.
+```python
+COTTON_CACHE_STRATEGY = "django"  # default is "local"
+COTTON_CACHE_PREFIX = "django_cotton:template:"  # override if you share the cache namespace
+COTTON_CACHE_TIMEOUT = None  # pass-through to Django's cache.set
+```
+
+### Offline warmup
+
+You can precompile every component offline and ship a manifest with your deployment artifacts:
+
+```bash
+python manage.py cotton_compile --output build/cotton-manifest.json
+```
+
+Point Cotton at the manifest to load compiled templates and dependency metadata on startup:
+
+```python
+COTTON_MANIFEST_PATH = BASE_DIR / "build" / "cotton-manifest.json"
+```
+
+Entries are skipped automatically if the template file changes (based on `mtime`). The manifest also seeds the dependency graph used for component preloading, so first-request latency stays low.
+
+### Optional accelerator hook
+
+If you build a native extension that exposes `django_cotton._fastcompiler.process` and `.get_dependencies` (for example via Rust/PyO3), set:
+
+```python
+COTTON_USE_ACCELERATOR = True
+```
+
+Cotton will fall back to the pure-Python compiler if the extension or setting is missing.
 
 <hr>
 

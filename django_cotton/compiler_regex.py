@@ -1,6 +1,15 @@
 import re
 from typing import List, Tuple
 
+from django.conf import settings
+
+try:
+    from django_cotton._fastcompiler import get_dependencies as fast_get_dependencies
+    from django_cotton._fastcompiler import process as fast_process
+except ImportError:  # pragma: no cover - optional acceleration
+    fast_get_dependencies = None
+    fast_process = None
+
 
 class Tag:
     tag_pattern = re.compile(
@@ -83,6 +92,8 @@ class CottonCompiler:
         self.cotton_verbatim_pattern = re.compile(
             r"{%\s*cotton_verbatim\s*%}(.*?){%\s*endcotton_verbatim\s*%}", re.DOTALL
         )
+        use_accel = getattr(settings, "COTTON_USE_ACCELERATOR", False)
+        self._use_accelerator = bool(use_accel and fast_process and fast_get_dependencies)
 
     def exclude_ignorables(self, html: str) -> Tuple[str, List[Tuple[str, str]]]:
         ignorables = []
@@ -145,6 +156,10 @@ class CottonCompiler:
         return "", html
 
     def get_component_dependencies(self, html: str) -> List[str]:
+        if self._use_accelerator:
+            result = fast_get_dependencies(html)
+            return list(result)
+
         dependencies = []
         processed_html, _ = self.exclude_ignorables(html)
         for match in Tag.tag_pattern.finditer(processed_html):
@@ -171,10 +186,21 @@ class CottonCompiler:
                 component_name = tag_name[2:]
                 dependencies.append(component_name)
 
-        return list(set(dependencies))
+        # Preserve order while removing duplicates
+        seen = set()
+        ordered = []
+        for dep in dependencies:
+            if dep not in seen:
+                ordered.append(dep)
+                seen.add(dep)
+
+        return ordered
 
     def process(self, html: str) -> str:
         """Putting it all together"""
+        if self._use_accelerator:
+            return fast_process(html)
+
         processed_html, ignorables = self.exclude_ignorables(html)
         vars_content, processed_html = self.process_c_vars(processed_html)
         replacements = self.get_replacements(processed_html)
