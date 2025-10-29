@@ -8,7 +8,6 @@ from django.core.management.base import BaseCommand, CommandError
 
 from django_cotton import manifest
 from django_cotton.compiler_regex import CottonCompiler
-from django_cotton.component_paths import generate_component_template_path
 
 
 class Command(BaseCommand):
@@ -35,9 +34,9 @@ class Command(BaseCommand):
         if not templates:
             raise CommandError("No cotton templates were discovered.")
 
-        compilation_results = []
+        manifest_entries = []
 
-        for template_path, template_name in templates:
+        for template_path in templates:
             try:
                 content = template_path.read_text(encoding="utf-8")
             except OSError as exc:
@@ -52,41 +51,18 @@ class Command(BaseCommand):
             dependencies = compiler.get_component_dependencies(content) if needs_processing else []
             compiled = compiler.process(content) if needs_processing else content
             mtime = template_path.stat().st_mtime
-            compilation_results.append(
+
+            manifest.store_entry(str(template_path), compiled, tuple(dependencies), mtime)
+            manifest_entries.append(
                 {
                     "path": str(template_path),
-                    "template_name": template_name,
                     "compiled": compiled,
                     "dependencies": dependencies,
                     "mtime": mtime,
-                    "content": content,
-                    "needs_processing": needs_processing,
                 }
             )
 
             self.stdout.write(f"Compiled {template_path}")
-
-        purity_map = self._compute_purity_map(compilation_results)
-
-        manifest_entries = []
-        for result in compilation_results:
-            pure = purity_map.get(result["template_name"], False)
-            manifest.store_entry(
-                result["path"],
-                result["compiled"],
-                tuple(result["dependencies"]),
-                result["mtime"],
-                pure,
-            )
-            manifest_entries.append(
-                {
-                    "path": result["path"],
-                    "compiled": result["compiled"],
-                    "dependencies": result["dependencies"],
-                    "mtime": result["mtime"],
-                    "pure": pure,
-                }
-            )
 
         if output_path:
             output_dir = os.path.dirname(output_path)
@@ -123,87 +99,13 @@ class Command(BaseCommand):
             if os.path.isdir(root_template_dir):
                 template_dirs.add(root_template_dir)
 
-        cotton_files = {}
+        cotton_files = set()
         for template_dir in template_dirs:
             cotton_dir = Path(template_dir) / cotton_dir_name
             if cotton_dir.is_dir():
                 for root, _, files in os.walk(cotton_dir):
                     for file in files:
                         if file.endswith(".html"):
-                            path = Path(root) / file
-                            try:
-                                template_name = path.relative_to(template_dir).as_posix()
-                            except ValueError:
-                                continue
-                            cotton_files[str(path)] = (path, template_name)
+                            cotton_files.add(Path(root) / file)
 
-        return sorted(cotton_files.values(), key=lambda item: item[1])
-
-    def _compute_purity_map(self, compilation_results):
-        """
-        Returns a mapping of template_name -> bool indicating whether the component
-        can skip context isolation.
-        """
-        hazard_markers = [
-            "cotton:impure",
-            "{% include",
-            "{% extends",
-            "{% block ",
-            "{% with ",
-            "{% regroup",
-            "{% autoescape",
-        ]
-        force_pure_marker = "cotton:pure"
-
-        name_to_info = {}
-        for result in compilation_results:
-            name_to_info[result["template_name"]] = {
-                "candidate": False,
-                "dependencies": [],
-                "pure": False,
-            }
-
-        for result in compilation_results:
-            template_name = result["template_name"]
-            content = result["content"]
-
-            force_impure = any(marker in content for marker in ("cotton:impure", "cotton:pure=false"))
-            force_pure = force_pure_marker in content
-
-            candidate = False
-            if not force_impure:
-                if force_pure:
-                    candidate = True
-                else:
-                    candidate = not any(marker in content for marker in hazard_markers)
-
-            dependencies = []
-            if result["needs_processing"]:
-                for dep in result["dependencies"]:
-                    dep_template_name = generate_component_template_path(dep, None)
-                    dependencies.append(dep_template_name)
-
-            info = name_to_info[template_name]
-            info["candidate"] = candidate
-            info["dependencies"] = dependencies
-
-            if not candidate and force_pure:
-                info["candidate"] = True
-
-            for dep in dependencies:
-                if dep not in name_to_info:
-                    info["candidate"] = False
-                    break
-
-        changed = True
-        while changed:
-            changed = False
-            for template_name, info in name_to_info.items():
-                if info["pure"] or not info["candidate"]:
-                    continue
-
-                if all(name_to_info.get(dep, {}).get("pure", False) for dep in info["dependencies"]):
-                    info["pure"] = True
-                    changed = True
-
-        return {name: info["pure"] for name, info in name_to_info.items()}
+        return sorted(cotton_files)

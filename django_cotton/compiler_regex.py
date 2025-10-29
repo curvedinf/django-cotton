@@ -6,11 +6,9 @@ from django.conf import settings
 try:
     from django_cotton._fastcompiler import get_dependencies as fast_get_dependencies
     from django_cotton._fastcompiler import process as fast_process
-    from django_cotton._fastcompiler import process_with_dependencies as fast_process_with_dependencies
 except ImportError:  # pragma: no cover - optional acceleration
     fast_get_dependencies = None
     fast_process = None
-    fast_process_with_dependencies = None
 
 
 class Tag:
@@ -94,14 +92,8 @@ class CottonCompiler:
         self.cotton_verbatim_pattern = re.compile(
             r"{%\s*cotton_verbatim\s*%}(.*?){%\s*endcotton_verbatim\s*%}", re.DOTALL
         )
-        accel_setting = getattr(settings, "COTTON_USE_ACCELERATOR", False)
-        if isinstance(accel_setting, str) and accel_setting.lower() == "auto":
-            use_accel = bool(fast_process and fast_get_dependencies)
-        else:
-            use_accel = bool(accel_setting and fast_process and fast_get_dependencies)
-
-        self._use_accelerator = use_accel
-        self._has_combined_accelerator = bool(self._use_accelerator and fast_process_with_dependencies)
+        use_accel = getattr(settings, "COTTON_USE_ACCELERATOR", False)
+        self._use_accelerator = bool(use_accel and fast_process and fast_get_dependencies)
 
     def exclude_ignorables(self, html: str) -> Tuple[str, List[Tuple[str, str]]]:
         ignorables = []
@@ -165,13 +157,8 @@ class CottonCompiler:
 
     def get_component_dependencies(self, html: str) -> List[str]:
         if self._use_accelerator:
-            try:
-                result = fast_get_dependencies(html)
-                return list(result)
-            except ValueError:
-                # Fall back to the pure-Python implementation if the accelerator
-                # cannot parse the template (e.g. malformed c-vars blocks).
-                pass
+            result = fast_get_dependencies(html)
+            return list(result)
 
         dependencies = []
         processed_html, _ = self.exclude_ignorables(html)
@@ -212,11 +199,7 @@ class CottonCompiler:
     def process(self, html: str) -> str:
         """Putting it all together"""
         if self._use_accelerator:
-            try:
-                return fast_process(html)
-            except ValueError:
-                # Fall back to the Python implementation if the accelerator fails.
-                pass
+            return fast_process(html)
 
         processed_html, ignorables = self.exclude_ignorables(html)
         vars_content, processed_html = self.process_c_vars(processed_html)
@@ -226,40 +209,3 @@ class CottonCompiler:
         if vars_content:
             processed_html = f"{vars_content}{processed_html}{{% endvars %}}"
         return self.restore_ignorables(processed_html, ignorables)
-
-    def compile_with_dependencies(self, html: str) -> Tuple[str, Tuple[str, ...]]:
-        """
-        Return the compiled template string along with the component dependency list.
-
-        When the optional Rust accelerator is present we offload the heavy work
-        to it. Otherwise we can optionally use Wove to run the pure-Python
-        compilation and dependency discovery in parallel.
-        """
-        if self._has_combined_accelerator:
-            try:
-                compiled, deps = fast_process_with_dependencies(html)
-                return compiled, tuple(deps)
-            except ValueError:
-                # Fallback handled below.
-                pass
-
-        parallel_compile = getattr(settings, "COTTON_PARALLEL_COMPILE", True)
-        if parallel_compile and not self._has_combined_accelerator:
-            from wove import weave  # Imported lazily to avoid overhead during import time.
-
-            with weave() as w:
-                @w.do
-                def compiled_template():
-                    return self.process(html)
-
-                @w.do
-                def component_dependencies():
-                    return tuple(self.get_component_dependencies(html))
-
-            compiled = w.result.compiled_template
-            dependencies = tuple(w.result.component_dependencies)
-            return compiled, dependencies
-
-        dependencies = tuple(self.get_component_dependencies(html))
-        compiled = self.process(html)
-        return compiled, dependencies
