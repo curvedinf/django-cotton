@@ -36,7 +36,11 @@ class Loader(BaseLoader):
         cached_payload = self.cache_handler.get_cached_template(cache_key)
 
         if cached_payload is not None:
-            compiled, dependencies = cached_payload
+            if isinstance(cached_payload, CachedTemplate):
+                compiled = cached_payload.compiled
+                dependencies = cached_payload.dependencies
+            else:
+                compiled, dependencies = cached_payload
             set_dependencies(origin.name, dependencies)
             return compiled
 
@@ -199,7 +203,11 @@ class CottonTemplateCacheHandler:
             compiled, dependencies = payload
             return CachedTemplate(compiled=compiled, dependencies=tuple(dependencies))
 
+        sentinel = cache.get(cache_key)
         with self._lock:
+            if sentinel is None:
+                self._local_cache.pop(cache_key, None)
+                return None
             return self._local_cache.get(cache_key)
 
     def cache_template(self, cache_key, compiled_template, dependencies):
@@ -210,6 +218,7 @@ class CottonTemplateCacheHandler:
         else:
             with self._lock:
                 self._local_cache[cache_key] = payload
+            cache.set(cache_key, True, timeout=self._cache_timeout)
 
     def get_cache_key(self, origin):
         try:

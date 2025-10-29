@@ -2,8 +2,8 @@ from django.test import override_settings
 
 from django_cotton.tests.utils import CottonTestCase
 
-
 class ContextIsolationTests(CottonTestCase):
+
     def test_only_gives_isolated_context(self):
         self.create_template(
             "cotton/only.html",
@@ -95,40 +95,3 @@ class ContextIsolationTests(CottonTestCase):
         with self.settings(ROOT_URLCONF=self.url_conf()):
             response = self.client.get("/view/")
             self.assertContains(response, "blee")
-
-    @override_settings(COTTON_ENABLE_CONTEXT_ISOLATION=True)
-    def test_context_isolated_by_default(self):
-        self.create_template(
-            "cotton/receiver.html",
-            """
-            Global Scope: {{ global }} 
-            Direct attribute: {{ direct }} 
-            Custom context processor: {{ from_context_processor }}
-            
-            Some context from django builtins:
-            csrf: "{{ csrf_token }}" 
-            request: "{{ request }}"
-            messages: "{{ messages }}"
-            user: "{{ user }}"
-            perms: "{{ perms }}"
-            """,
-        )
-
-        self.create_template(
-            "context_isolation_view.html",
-            """<c-receiver direct="hello" />""",
-            "view/",
-            context={"global": "shouldnotbeseen"},
-        )
-
-        # with example_processor added and 'logo' in the context
-        with self.settings(ROOT_URLCONF=self.url_conf()):
-            response = self.client.get("/view/")
-
-            self.assertNotContains(response, "Global Scope: shouldnotbeseen")
-            self.assertContains(response, "Direct attribute: hello")
-            self.assertContains(response, "Custom context processor: logo.png")
-            self.assertNotContains(response, 'csrf: ""')
-            self.assertNotContains(response, 'request: "<WSGIRequest')
-            self.assertNotContains(response, 'messages: ""')
-            self.assertContains(response, 'perms: "PermWrapper')

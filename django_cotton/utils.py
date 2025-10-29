@@ -21,8 +21,12 @@ def ensure_quoted(value):
 
 
 def get_cotton_data(context):
-    data = context.setdefault("cotton_data", {"stack": [], "vars": {}, "preloaded_components": set()})
+    data = context.setdefault(
+        "cotton_data",
+        {"stack": [], "vars": {}, "preloaded_components": set(), "preloaded_dependency_origins": set()},
+    )
     data.setdefault("preloaded_components", set())
+    data.setdefault("preloaded_dependency_origins", set())
     data.setdefault("stack", [])
     data.setdefault("vars", {})
     return data

@@ -1,18 +1,17 @@
+import ast
 from typing import Iterable, Union
 
 from wove import weave
 
 from django.conf import settings
 from django.template import Library, TemplateDoesNotExist
-from django.template.base import (
-    Node,
-)
+from django.template.base import Node, Template, TemplateSyntaxError, Variable, VariableDoesNotExist
 from django.template.context import Context, RequestContext
 from django.template.loader import get_template
 
 from django_cotton import manifest
 from django_cotton.utils import get_cotton_data
-from django_cotton.templatetags import Attrs, DynamicAttr, UnprocessableDynamicAttr
+from django_cotton.templatetags import Attrs, UnprocessableDynamicAttr
 from django_cotton.dependency_registry import get_dependencies
 from django_cotton.component_paths import generate_component_template_path
 from django_cotton.preload import preload_dependency_tree
@@ -20,13 +19,97 @@ from django_cotton.preload import preload_dependency_tree
 register = Library()
 
 
+class PreparedDynamicValue:
+    """Precompiled dynamic attribute resolver that avoids per-render object creation."""
+
+    __slots__ = ("_raw", "_variable", "_template", "_literal_cached", "_literal_value")
+
+    def __init__(self, raw):
+        self._raw = raw
+        self._variable = self._prepare_variable(raw) if isinstance(raw, str) else None
+        self._template = None
+        self._literal_cached = False
+        self._literal_value = None
+
+    def resolve(self, context):
+        if not isinstance(self._raw, str):
+            return self._raw
+
+        if self._variable is not None:
+            try:
+                value = self._variable.resolve(context)
+            except (VariableDoesNotExist, TemplateSyntaxError):
+                value = None
+            else:
+                if isinstance(value, Attrs):
+                    return value.attrs_dict()
+                return value
+
+        if self._raw == "":
+            return True
+
+        template_value = self._render_template(context)
+        if template_value is not None:
+            return template_value
+
+        return self._literal_value_or_raise()
+
+    def _prepare_variable(self, raw):
+        try:
+            return Variable(raw)
+        except (TemplateSyntaxError, ValueError):
+            return None
+
+    def _render_template(self, context):
+        if self._template is False:
+            return None
+
+        if self._template is None:
+            try:
+                self._template = Template(self._raw)
+            except TemplateSyntaxError:
+                self._template = False
+                return None
+
+        try:
+            rendered = self._template.render(context)
+        except TemplateSyntaxError:
+            return None
+
+        if rendered != self._raw:
+            return rendered
+
+        return None
+
+    def _literal_value_or_raise(self):
+        if not self._literal_cached:
+            try:
+                self._literal_value = ast.literal_eval(self._raw)
+            except (ValueError, SyntaxError) as exc:
+                raise UnprocessableDynamicAttr from exc
+            self._literal_cached = True
+        return self._literal_value
+
+
 class CottonComponentNode(Node):
     def __init__(self, component_name, nodelist, attrs, only):
         self.component_name = component_name
         self.nodelist = nodelist
-        self.attrs = attrs
         self.template_cache = {}
         self.only = only
+        (
+            self._attr_steps,
+            self._force_pure_default,
+            self._force_impure_default,
+            self._static_is_value,
+            self._has_dynamic_is,
+        ) = self._prepare_attribute_steps(attrs)
+        self.attrs = attrs
+        self._template_path_cache = {}
+        if not self._has_dynamic_is and (self.component_name != "component" or self._static_is_value is not None):
+            primary = self._generate_component_template_path(self.component_name, self._static_is_value)
+            fallback = self._compute_fallback_path(primary)
+            self._template_path_cache[self._static_is_value] = (primary, fallback)
 
     def render(self, context):
         cotton_data = get_cotton_data(context)
@@ -39,47 +122,25 @@ class CottonComponentNode(Node):
         }
         cotton_data["stack"].append(component_data)
 
-        # Process simple attributes and boolean attributes
-        force_pure = False
-        force_impure = False
-        for key, value in self.attrs.items():
-            value = self._strip_quotes_safely(value)
-            if key in {"cotton:pure", "cotton:impure"}:
-                if isinstance(value, bool):
-                    truthy = value
-                else:
-                    normalized = (value or "").lower()
-                    truthy = normalized not in ("false", "0", "off", "no", "")
-                if key == "cotton:pure":
-                    if truthy:
-                        force_pure = True
-                    else:
-                        force_impure = True
-                else:
-                    if truthy:
-                        force_impure = True
-                    else:
-                        force_pure = True
+        force_pure = self._force_pure_default
+        force_impure = self._force_impure_default
+
+        component_attrs = component_data["attrs"]
+        for step_type, key, payload in self._attr_steps:
+            if step_type == "static":
+                component_attrs[key] = payload
                 continue
-            if value is True:  # Boolean attribute
-                component_data["attrs"][key] = True
-            elif key.startswith("::"):  # Escaping 1 colon e.g for shorthand alpine
-                key = key[1:]
-                component_data["attrs"][key] = value
-            elif key.startswith(":"):
-                key = key[1:]
-                try:
-                    resolved_value = DynamicAttr(value).resolve(context)
-                except UnprocessableDynamicAttr:
-                    component_data["attrs"].unprocessable(key)
-                else:
-                    # Handle ":attrs" specially
-                    if key == "attrs":
-                        component_data["attrs"].dict.update(resolved_value)
-                    else:
-                        component_data["attrs"][key] = resolved_value
-            else:
-                component_data["attrs"][key] = value
+
+            try:
+                resolved_value = payload.resolve(context)
+            except UnprocessableDynamicAttr:
+                component_attrs.unprocessable(key)
+                continue
+
+            if step_type == "spread":
+                component_attrs.dict.update(resolved_value)
+            else:  # dynamic
+                component_attrs[key] = resolved_value
 
         # Render the nodelist to process any slot tags and vars
         default_slot = self.nodelist.render(context)
@@ -126,7 +187,7 @@ class CottonComponentNode(Node):
         if cache is None:
             cache = context.render_context[self] = {}
 
-        template_path = self._generate_component_template_path(self.component_name, attrs.get("is"))
+        template_path, fallback_path = self._resolve_template_paths(attrs)
 
         if template_path in cache:
             return cache[template_path]
@@ -135,8 +196,6 @@ class CottonComponentNode(Node):
         cotton_data = get_cotton_data(context)
         if "preloaded_templates" in cotton_data and template_path in cotton_data["preloaded_templates"]:
             compiled_content = cotton_data["preloaded_templates"][template_path]
-            # We need to create a Template object from the compiled string
-            from django.template import Template
             template = Template(compiled_content)
             self._mark_template(template, template_path)
             cache[template_path] = template
@@ -152,8 +211,6 @@ class CottonComponentNode(Node):
             return template
         except TemplateDoesNotExist:
             # If the primary template doesn't exist, try the fallback path (index.html)
-            fallback_path = template_path.rsplit(".html", 1)[0] + "/index.html"
-
             # Check if the fallback template is already cached
             if fallback_path in cache:
                 return cache[fallback_path]
@@ -168,7 +225,11 @@ class CottonComponentNode(Node):
 
     def _create_partial_context(self, original_context, component_state):
         # Get the request object from the original context
-        request = original_context.get("request")
+        request = None
+        if hasattr(original_context, "get"):
+            request = original_context.get("request")
+        elif hasattr(original_context, "request"):
+            request = original_context.request
 
         if request:
             # Create a new RequestContext
@@ -182,6 +243,99 @@ class CottonComponentNode(Node):
 
         return new_context
 
+    def _prepare_attribute_steps(self, attrs):
+        steps = []
+        force_pure = False
+        force_impure = False
+        static_is_value = None
+        has_dynamic_is = False
+
+        for key, raw_value in attrs.items():
+            value = self._strip_quotes_safely(raw_value) if isinstance(raw_value, str) else raw_value
+
+            if key in {"cotton:pure", "cotton:impure"}:
+                truthy = self._is_truthy(value)
+                if key == "cotton:pure":
+                    if truthy:
+                        force_pure = True
+                    else:
+                        force_impure = True
+                else:
+                    if truthy:
+                        force_impure = True
+                    else:
+                        force_pure = True
+                continue
+
+            if value is True:
+                steps.append(("static", key, True))
+                if key == "is":
+                    static_is_value = True
+                continue
+
+            if key.startswith("::"):
+                actual_key = key[1:]
+                steps.append(("static", actual_key, value))
+                if actual_key == "is":
+                    static_is_value = value
+                continue
+
+            if key.startswith(":"):
+                actual_key = key[1:]
+                resolver = self._compile_dynamic_value(value)
+                if actual_key == "attrs":
+                    steps.append(("spread", actual_key, resolver))
+                else:
+                    steps.append(("dynamic", actual_key, resolver))
+                    if actual_key == "is":
+                        has_dynamic_is = True
+                continue
+
+            steps.append(("static", key, value))
+            if key == "is":
+                static_is_value = value
+
+        return steps, force_pure, force_impure, static_is_value, has_dynamic_is
+
+    def _resolve_template_paths(self, attrs):
+        attrs_dict = self._extract_attrs_dict(attrs)
+        if attrs_dict is not None:
+            is_value = attrs_dict.get("is")
+        elif hasattr(attrs, "get"):
+            is_value = attrs.get("is")
+        else:
+            is_value = None
+        cache_key = is_value
+        cached = self._template_path_cache.get(cache_key)
+        if cached:
+            return cached
+
+        template_path = self._generate_component_template_path(self.component_name, is_value)
+        fallback_path = self._compute_fallback_path(template_path)
+        self._template_path_cache[cache_key] = (template_path, fallback_path)
+        return template_path, fallback_path
+
+    @staticmethod
+    def _compile_dynamic_value(value):
+        if isinstance(value, PreparedDynamicValue):
+            return value
+        return PreparedDynamicValue(value)
+
+    @staticmethod
+    def _compute_fallback_path(template_path: str) -> str:
+        if ".html" in template_path:
+            base, _ = template_path.rsplit(".html", 1)
+            return f"{base}/index.html"
+        return f"{template_path.rstrip('/')}/index.html"
+
+    @staticmethod
+    def _extract_attrs_dict(attrs):
+        if isinstance(attrs, Attrs):
+            return attrs.dict
+        if isinstance(attrs, dict):
+            return attrs
+        return None
+
     @staticmethod
     def _generate_component_template_path(component_name: str, is_: Union[str, None]) -> str:
         """Generate the path to the template for the given component name."""
@@ -192,6 +346,13 @@ class CottonComponentNode(Node):
         if type(value) is str and value.startswith('"') and value.endswith('"'):
             return value[1:-1]
         return value
+
+    @staticmethod
+    def _is_truthy(value):
+        if isinstance(value, bool):
+            return value
+        normalized = (value or "").lower()
+        return normalized not in ("false", "0", "off", "no", "")
 
     @staticmethod
     def _mark_template(template, template_path):
@@ -229,8 +390,13 @@ class CottonComponentNode(Node):
         if not template_path:
             return
 
+        dependency_cache = cotton_data.setdefault("preloaded_dependency_origins", set())
+        if template_path in dependency_cache:
+            return
+
         dependencies = get_dependencies(template_path)
         if not dependencies:
+            dependency_cache.add(template_path)
             return
 
         preloaded = cotton_data.setdefault("preloaded_components", set())
@@ -281,6 +447,7 @@ class CottonComponentNode(Node):
         )
 
         preloaded.update(newly_loaded)
+        dependency_cache.add(template_path)
 
 
 def cotton_component(parser, token):

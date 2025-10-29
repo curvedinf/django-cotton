@@ -1,0 +1,64 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.5, pytest-8.4.2, pluggy-1.6.0
+django: version: 5.2.7, settings: django_cotton.tests.test_settings (from env)
+rootdir: /home/chase/Projects/django-cotton
+configfile: pytest.ini
+plugins: django-4.11.1
+collected 87 items
+
+django_cotton/tests/test_attributes.py ....................              [ 22%]
+django_cotton/tests/test_compiler.py .....                               [ 28%]
+django_cotton/tests/test_context_isolation.py F...                       [ 33%]
+django_cotton/tests/test_cvars.py ..................                     [ 54%]
+django_cotton/tests/test_dynamic_components.py ....                      [ 58%]
+django_cotton/tests/test_misc.py .........                               [ 68%]
+django_cotton/tests/test_slots.py ....                                   [ 73%]
+django_cotton/tests/test_template_rendering.py ................          [ 91%]
+django_cotton/tests/test_cache.py ...                                    [ 95%]
+django_cotton/tests/test_manifest.py ..                                  [ 97%]
+django_cotton/tests/test_preload.py ..                                   [100%]
+
+=================================== FAILURES ===================================
+____________ ContextIsolationTests.test_context_isolated_by_default ____________
+
+self = <django_cotton.tests.test_context_isolation.ContextIsolationTests testMethod=test_context_isolated_by_default>
+
+    @override_settings(COTTON_ENABLE_CONTEXT_ISOLATION=True)
+    def test_context_isolated_by_default(self):
+        self.create_template(
+            "cotton/receiver.html",
+            """
+            Global Scope: {{ global }}
+            Direct attribute: {{ direct }}
+            Custom context processor: {{ from_context_processor }}
+    
+            Some context from django builtins:
+            csrf: "{{ csrf_token }}"
+            request: "{{ request }}"
+            messages: "{{ messages }}"
+            user: "{{ user }}"
+            perms: "{{ perms }}"
+            """,
+        )
+    
+        self.create_template(
+            "context_isolation_view.html",
+            """<c-receiver direct="hello" />""",
+            "view/",
+            context={"global": "shouldnotbeseen"},
+        )
+    
+        # with example_processor added and 'logo' in the context
+        with self.settings(ROOT_URLCONF=self.url_conf()):
+            response = self.client.get("/view/")
+    
+            self.assertNotContains(response, "Global Scope: shouldnotbeseen")
+            self.assertContains(response, "Direct attribute: hello")
+>           self.assertContains(response, "Custom context processor: logo.png")
+E           AssertionError: False is not true : Couldn't find 'Custom context processor: logo.png' in the following response
+E           b'\n            Global Scope:  \n            Direct attribute: hello \n            Custom context processor: \n            \n            Some context from django builtins:\n            csrf: "" \n            request: ""\n            messages: ""\n            user: ""\n            perms: ""\n            '
+
+django_cotton/tests/test_context_isolation.py:130: AssertionError
+=========================== short test summary info ============================
+FAILED django_cotton/tests/test_context_isolation.py::ContextIsolationTests::test_context_isolated_by_default
+========================= 1 failed, 86 passed in 0.29s =========================
