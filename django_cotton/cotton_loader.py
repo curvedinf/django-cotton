@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable, Tuple
 
+from wove import weave
+
 from django.conf import settings
 from django.template.loaders.base import Loader as BaseLoader
 from django.core.exceptions import SuspiciousFileOperation
@@ -17,6 +19,8 @@ from django.core.cache import cache
 from django_cotton import manifest
 from django_cotton.compiler_regex import CottonCompiler
 from django_cotton.dependency_registry import set_dependencies
+from django_cotton.component_paths import generate_component_template_path
+from django_cotton.preload import preload_dependency_tree
 
 
 class Loader(BaseLoader):
@@ -25,6 +29,7 @@ class Loader(BaseLoader):
         self.cotton_compiler = CottonCompiler()
         self.cache_handler = CottonTemplateCacheHandler()
         self.dirs = dirs
+        self._warmed_templates = set()
 
     def get_contents(self, origin):
         cache_key = self.cache_handler.get_cache_key(origin)
@@ -48,14 +53,15 @@ class Loader(BaseLoader):
         needs_processing = "<c-" in template_string or "{% cotton_verbatim" in template_string
 
         if needs_processing:
-            dependencies = self.cotton_compiler.get_component_dependencies(template_string)
-            compiled = self.cotton_compiler.process(template_string)
+            compiled, dependencies = self.cotton_compiler.compile_with_dependencies(template_string)
         else:
-            dependencies = []
+            dependencies = ()
             compiled = template_string
 
         self.cache_handler.cache_template(cache_key, compiled, dependencies)
         set_dependencies(origin.name, dependencies)
+
+        self._warm_dependencies(dependencies)
 
         return compiled
 
@@ -114,6 +120,50 @@ class Loader(BaseLoader):
                 template_name=template_name,
                 loader=self,
             )
+
+    def _warm_dependencies(self, dependencies: Iterable[str]) -> None:
+        warm_enabled = getattr(settings, "COTTON_WARM_DEPENDENCIES_ON_COMPILE", True)
+        if not warm_enabled:
+            return
+
+        deps = tuple(dict.fromkeys(dependencies))
+        if not deps:
+            return
+
+        initial_paths = [generate_component_template_path(component, None) for component in deps]
+        async_enabled = getattr(settings, "COTTON_ASYNC_PRELOAD", True)
+        transitive = getattr(settings, "COTTON_PRELOAD_TRANSITIVE", True)
+
+        def load_template(path: str) -> None:
+            try:
+                self.engine.get_template(path)
+            except TemplateDoesNotExist:
+                pass
+
+        def batch_executor(batch: Iterable[str], loader) -> None:
+            batch_list = list(batch)
+            if not batch_list:
+                return
+            if not async_enabled or len(batch_list) == 1:
+                for path in batch_list:
+                    loader(path)
+                return
+
+            with weave() as w:
+                @w.do(batch_list)
+                def warm_task(target):
+                    loader(target)
+
+            w.result.warm_task
+
+        preload_dependency_tree(
+            initial_paths,
+            resolve_component=lambda name: generate_component_template_path(name, None),
+            load_template=load_template,
+            transitive=transitive,
+            batch_executor=batch_executor,
+            seen=self._warmed_templates,
+        )
 
 
 @dataclass(frozen=True)

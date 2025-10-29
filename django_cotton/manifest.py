@@ -16,6 +16,7 @@ class ManifestEntry:
     compiled: str
     dependencies: Tuple[str, ...]
     mtime: float
+    pure: bool = False
 
 
 _manifest_loaded = False
@@ -52,11 +53,17 @@ def _ensure_loaded():
         compiled = entry.get("compiled")
         dependencies = tuple(entry.get("dependencies") or ())
         mtime = entry.get("mtime")
+        pure = bool(entry.get("pure", False))
 
         if not template_path or compiled is None or mtime is None:
             continue
 
-        _entries[template_path] = ManifestEntry(compiled=compiled, dependencies=dependencies, mtime=mtime)
+        _entries[template_path] = ManifestEntry(
+            compiled=compiled,
+            dependencies=dependencies,
+            mtime=mtime,
+            pure=pure,
+        )
         registry_seed.append((template_path, dependencies))
 
     if registry_seed:
@@ -84,8 +91,10 @@ def get_precompiled(path: str) -> Optional[ManifestEntry]:
     return entry
 
 
-def store_entry(path: str, compiled: str, dependencies: Tuple[str, ...], mtime: float) -> None:
-    entry = ManifestEntry(compiled=compiled, dependencies=tuple(dependencies), mtime=mtime)
+def store_entry(
+    path: str, compiled: str, dependencies: Tuple[str, ...], mtime: float, pure: bool = False
+) -> None:
+    entry = ManifestEntry(compiled=compiled, dependencies=tuple(dependencies), mtime=mtime, pure=pure)
     _entries[path] = entry
     _set_registry_dependencies(path, dependencies)
 

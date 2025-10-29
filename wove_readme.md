@@ -1,7 +1,38 @@
 # ![Wove](wove.png)
+
+[![PyPI](https://img.shields.io/pypi/v/wove)](https://pypi.org/project/wove/)
+[![GitHub license](https://img.shields.io/github/license/curvedinf/wove)](LICENSE)
+[![coverage](coverage.svg)](https://github.com/curvedinf/wove/actions/workflows/coverage.yml)
+[![GitHub last commit](https://img.shields.io/github/last-commit/curvedinf/wove)](https://github.com/curvedinf/wove/commits/main)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/wove)](https://pypi.org/project/wove/)
+[![GitHub stars](https://img.shields.io/github/stars/curvedinf/wove)](https://github.com/curvedinf/wove/stargazers)
+[![Ko-fi Link](kofi.webp)](https://ko-fi.com/A0A31B6VB6)
+
+[![Python 3.8](https://github.com/curvedinf/wove/actions/workflows/python-3-8.yml/badge.svg)](https://github.com/curvedinf/wove/actions/workflows/python-3-8.yml)
+[![Python 3.9](https://github.com/curvedinf/wove/actions/workflows/python-3-9.yml/badge.svg)](https://github.com/curvedinf/wove/actions/workflows/python-3-9.yml)
+[![Python 3.10](https://github.com/curvedinf/wove/actions/workflows/python-3-10.yml/badge.svg)](https://github.com/curvedinf/wove/actions/workflows/python-3-10.yml)
+[![Python 3.11](https://github.com/curvedinf/wove/actions/workflows/python-3-11.yml/badge.svg)](https://github.com/curvedinf/wove/actions/workflows/python-3-11.yml)
+[![Python 3.12](https://github.com/curvedinf/wove/actions/workflows/python-3-12.yml/badge.svg)](https://github.com/curvedinf/wove/actions/workflows/python-3-12.yml)
+[![Python 3.13](https://github.com/curvedinf/wove/actions/workflows/python-3-13.yml/badge.svg)](https://github.com/curvedinf/wove/actions/workflows/python-3-13.yml)
+[![Python 3.14](https://github.com/curvedinf/wove/actions/workflows/python-3-14.yml/badge.svg)](https://github.com/curvedinf/wove/actions/workflows/python-3-14.yml)
+[![Python 3.14 (free-threaded)](https://github.com/curvedinf/wove/actions/workflows/python-3-14t.yml/badge.svg)](https://github.com/curvedinf/wove/actions/workflows/python-3-14t.yml)
+
 Beautiful Python async.
+
+## Table of Contents
+- [What is Wove For?](#what-is-wove-for)
+- [Installation](#installation)
+- [The Basics](#the-basics)
+- [Wove's Design Pattern](#woves-design-pattern)
+- [Core API](#core-api)
+- [More Spice](#more-spice)
+- [Advanced Features](#advanced-features)
+- [Background Processing](#background-processing)
+- [Benchmarks](#benchmarks)
+- [More Examples](#more-examples)
+
 ## What is Wove For?
-Wove is for running high latency async tasks like web requests and database queries concurrently in the same way as
+Wove is for running high latency async tasks like web requests and database queries concurrently in the same way as 
 asyncio, but with a drastically improved user experience.
 Improvements compared to asyncio include:
 -   **Looks Like Normal Python**: Parallelism and execution order are implicit. You write simple, decorated functions. No manual task objects, no callbacks.
@@ -103,24 +134,24 @@ class DataPipeline(Weave):
         # `records` is provided by the `weave()` call below.
         time.sleep(0.1)
         return np.linspace(0, 10, records)
-
+    
     @Weave.do("dataset")
     def feature_a(self, item):
         # First parallel processing branch.
         time.sleep(0.2)
         return np.sin(item)
-
+    
     @Weave.do("dataset")
     def feature_b(self, item):
         # Second parallel processing branch.
         time.sleep(0.3)
         return np.cos(item)
-
+    
     @Weave.do
     def merged_features(self, feature_a, feature_b):
         # Merge the results from parallel branches - bottom of the diamond.
         return np.column_stack((feature_a, feature_b))
-
+    
     @Weave.do
     async def report(self, merged_features):
         # Dynamically map an external function using `merge`.
@@ -153,6 +184,9 @@ The `weave()` context manager has several optional parameters:
 -   **`parent_weave: Weave`**: A `Weave` class to inherit tasks from.
 -   **`debug: bool`**: If `True`, prints a detailed execution plan to the console before running.
 -   **`max_workers: int`**: The maximum number of threads for running synchronous tasks in the background.
+-   **`background: bool`**: If `True`, runs the entire weave in a background thread.
+-   **`fork: bool`**: If `True` and `background` is `True`, runs the weave in a forked process instead of a thread.
+-   **`on_done: callable`**: A callback function to be executed when a background weave is complete.
 -   **`**kwargs`**: Any additional keyword arguments passed to `weave()` become initialization data that can be used as task parameters.
 ### Task parameters
 The `@w.do` decorator has several optional parameters for convenience:
@@ -220,7 +254,7 @@ async def main():
         @w.do
         async def user_id():
             return 123
-
+        
         # Both `user_profile` and `user_orders` depend on `user_id`
         # so they will run concurrently after `user_id` completes.
         @w.do
@@ -233,7 +267,7 @@ async def main():
             print(f"-> Fetching orders for user {user_id}...")
             await asyncio.sleep(0.1)
             return [{"order_id": 1, "total": 100}, {"order_id": 2, "total": 50}]
-
+        
         # Automatically wait until both `user_profile` and `user_orders`
         # complete then pass their results to `report`.
         @w.do
@@ -337,6 +371,33 @@ Wove provides a set of simple, composable helper functions for common data manip
 -   **`undict(a_dict)`**: Converts a dictionary into a list of `[key, value]` pairs.
 -   **`redict(list_of_pairs)`**: Converts a list of key-value pairs back into a dictionary.
 -   **`denone(an_iterable)`**: Removes all `None` values from an iterable.
+
+## Background Processing
+Wove supports running the entire weave in the background, either in a separate thread or a forked process. This is useful for fire-and-forget tasks where you don't need to wait for the result immediately.
+
+To enable background processing, set `background=True` in the `weave()` call.
+-   **Embedded (threaded) mode (default)**: `weave(background=True)` will run the weave in a new background thread.
+-   **Forked mode**: `weave(background=True, fork=True)` will run the weave in a new background process. This is useful for CPU-bound tasks that would otherwise block the main event loop.
+
+You can provide an `on_done` callback to be executed when the background weave is complete. The callback will receive the `WoveResult` object as its only argument.
+```python
+import time
+from wove import weave
+
+def my_callback(result):
+    print(f"Background weave complete! Final result: {result.final}")
+
+# Run in a background thread
+with weave(background=True, on_done=my_callback) as w:
+    @w.do
+    def long_running_task():
+        time.sleep(2)
+        return "Done!"
+
+print("Main program continues to run...")
+# After 2 seconds, the callback will be executed.
+```
+
 ## Benchmarks
 Wove has low overhead and internally uses `asyncio`, so its performance is comparable to using `threading` or `asyncio` directly. The benchmark script below is available in the `/examples` directory.
 ```bash

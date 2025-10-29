@@ -22,6 +22,20 @@ cd "$PROJECT_ROOT"
 mkdir -p dist
 rm -f dist/django_cotton-*.whl
 
+BUILD_ACCELERATOR="${COTTON_BUILD_ACCELERATOR:-auto}"
+if [ "$BUILD_ACCELERATOR" != "0" ]; then
+    if scripts/build_fastcompiler.sh; then
+        echo "Rust accelerator built."
+    else
+        if [ "$BUILD_ACCELERATOR" = "auto" ]; then
+            echo "Warning: Failed to build Rust accelerator; continuing without it." >&2
+        else
+            echo "Failed to build Rust accelerator and COTTON_BUILD_ACCELERATOR is not 'auto'." >&2
+            exit 1
+        fi
+    fi
+fi
+
 python -m build --wheel --no-isolation
 
 LATEST_WHEEL="$(ls -1t dist/django_cotton-*.whl | head -n1)"

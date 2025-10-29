@@ -38,6 +38,7 @@ def test_manifest_loading_registers_dependencies(settings, tmp_path):
     assert entry is not None
     assert entry.compiled == "compiled-value"
     assert entry.dependencies == ("child",)
+    assert entry.pure is False
 
     deps = get_dependencies(str(template_file))
     assert deps == ("child",)
